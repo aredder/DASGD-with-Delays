@@ -1,4 +1,5 @@
-import matplotlib; matplotlib.use("TkAgg")
+import datetime
+
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import pareto
@@ -68,64 +69,82 @@ def running_mean(x, n):
     cumsum = np.cumsum(np.insert(x, 0, 0))
     return (cumsum[n:] - cumsum[:-n]) / float(n)
 
+def plot_mean_variance(data, kernel_size_mean, kernel_size_variance, label):
+    std_nr = 1
+    kernel_mean = np.ones(kernel_size_mean) / kernel_size_mean
+    kernel_variance = np.ones(kernel_size_variance) / kernel_size_variance
+    mean = np.convolve(np.mean(data, axis=1), kernel_mean , mode='valid')
+    standard_dev = np.convolve(np.std(data, axis=1), kernel_variance, mode='valid')
+    plt.plot(mean, label=label)
+    plt.fill_between(range(len(data[:, 0])-kernel_size_mean+1), mean-std_nr*standard_dev, mean+std_nr*standard_dev, alpha=0.2)
 
 def main():
     hp = {'K': 100,      # Number of workers
-          'p': 2,     # pareto exponent
+          'p': 10/7,     # pareto exponent
           'dim': 2,     # dimension of optimization problem
           }
 
     quadratic_function = RandomQuadraticFunction(hp['dim'])
-    time_steps = 100000
+    time_steps = 1000000
+    runs = 10
     p_opt = 1/2*(1 + 1/(hp['p']))
-    p_max = 1/hp['p'] + 0.00001
+    p_max = 1/hp['p']
+    p_unstable = 0.55
     p_min = 1
-    stepsize_exponents = [p_max, p_min, p_opt]
-
+    stepsize_exponents = [p_unstable, p_max, p_opt, p_min]
+    #stepsize_exponents = [0.55, 0.7, 0.85, 1]
     plt.figure()
     r = 0
     for exponent in stepsize_exponents:
         print(r)
         stepsize = np.array([1/(n + 1)**exponent for n in range(time_steps)])
-        variable_trajectory = np.zeros(hp['dim']+1)
-        obj_gradient_norm_trajectory = np.zeros((time_steps, 1))
 
-        workers = []
-        for k in range(hp['K']):
-            if k == 0:
-                workers.append(Worker(hp['p']))
-            else:
-                workers.append(Worker(hp['p'] + 4*np.random.rand()))  # workers are heterogeneous with different speed
-            workers[k].get_job(variable_trajectory, quadratic_function.sample())
+        obj_gradient_norm_trajectory = np.zeros((time_steps, runs))
 
-        m = 0
-        l = 0
-        for n in range(time_steps):
-            k = np.argmin([worker.time for worker in workers])
-            gradient = workers[k].get_gradient()
-            if k > hp['K']*1/4:  # 3/4 of the workers calculate for the first component
-                variable_trajectory[:2] = variable_trajectory[:2] - stepsize[m]*gradient[:2]
-                m += 1
-            else:
-                variable_trajectory[2] = variable_trajectory[2] - stepsize[l]*gradient[2]
-                l += 1
-            workers[k].get_job(variable_trajectory, quadratic_function.sample())
-            obj_gradient_norm_trajectory[n, :] = quadratic_function.evaluate(variable_trajectory)
+        for i in range(runs):
+            variable_trajectory = np.zeros(hp['dim'] + 1)
+            workers = []
+            for k in range(hp['K']):
+                if k == 0:
+                    workers.append(Worker(hp['p']))
+                else:
+                    workers.append(Worker(hp['p'] + 4*np.random.rand()))  # workers are heterogeneous with different speed
+                workers[k].get_job(variable_trajectory, quadratic_function.sample())
 
-        N = 1000  # running mean window
+            m = 0
+            l = 0
+            for n in range(time_steps):
+                k = np.argmin([worker.time for worker in workers])
+                gradient = workers[k].get_gradient()
+                if k > hp['K']*1/4:  # 3/4 of the workers calculate for the first component
+                    variable_trajectory[:2] = variable_trajectory[:2] - stepsize[m]*gradient[:2]
+                    m += 1
+                else:
+                    variable_trajectory[2] = variable_trajectory[2] - stepsize[l]*gradient[2]
+                    l += 1
+                workers[k].get_job(variable_trajectory, quadratic_function.sample())
+                obj_gradient_norm_trajectory[n, i] = quadratic_function.evaluate(variable_trajectory)
+
+        kernel_size_mean = 100
+        kernel_size_var = 100
         if r == 0:
-            plt.plot(running_mean(obj_gradient_norm_trajectory, N), label=r'$q_{max}$')
+            plot_mean_variance(obj_gradient_norm_trajectory, kernel_size_mean, kernel_size_var, '$q = 0.55$')
         elif r == 1:
-            plt.plot(running_mean(obj_gradient_norm_trajectory, N), label=r'$q_{min}$')
+            plot_mean_variance(obj_gradient_norm_trajectory, kernel_size_mean, kernel_size_var, '$q = 0.70$')
+        elif r == 2:
+            plot_mean_variance(obj_gradient_norm_trajectory, kernel_size_mean, kernel_size_var, '$q = 0.85$')
         else:
-            plt.plot(running_mean(obj_gradient_norm_trajectory, N), label=r'$q_{opt}$')
+            plot_mean_variance(obj_gradient_norm_trajectory, kernel_size_mean, kernel_size_var, '$q = 1.00$')
         r += 1
 
+    plt.ylim([1/10000, 10])
     plt.xlabel(r'$n$')
     plt.ylabel(r'$ || \nabla_x F(x_n) ||$')
     plt.yscale('log')
     plt.legend()
-    plt.savefig('evaluation_compare_avg.pdf')
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    plt.savefig(timestamp + 'DASGD_compare.pdf')
+    plt.show()
 
 
 if __name__ == "__main__":
